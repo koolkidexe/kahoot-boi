@@ -1,47 +1,72 @@
-import streamlit as st
+# === File: gemini_server.py ===
+from fastapi import FastAPI, Request
 import google.generativeai as genai
+import uvicorn
 
-st.set_page_config(page_title="Kahoot Gemini Bot", layout="centered")
-st.title("🤖 Kahoot Auto Answer Bot with Gemini")
+app = FastAPI()
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"  # Replace with your actual Gemini API key
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-pro")
 
-# Inputs
-api_key = st.text_input("🔑 Enter your Gemini API Key", type="password")
-question = st.text_area("❓ Kahoot Question")
-answers_input = st.text_area("🔢 Answer Choices (one per line, max 4)")
+@app.post("/answer")
+async def get_best_answer(request: Request):
+    data = await request.json()
+    question = data.get("question")
+    choices = data.get("choices")
 
-submit = st.button("🔍 Get Best Answer")
+    prompt = f"""You are answering a Kahoot quiz.
 
-# Process
-if submit:
-    if not api_key or not question or not answers_input:
-        st.error("Please fill in all fields.")
-    else:
-        # Setup Gemini
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-pro")
-        answers = answers_input.strip().split("\n")
-
-        if len(answers) > 4:
-            st.error("Please enter only up to 4 choices.")
-        else:
-            prompt = f"""You are helping answer a multiple choice Kahoot quiz.
 Question: {question}
-Options:
-{chr(65)}. {answers[0] if len(answers) > 0 else ''}
-{chr(66)}. {answers[1] if len(answers) > 1 else ''}
-{chr(67)}. {answers[2] if len(answers) > 2 else ''}
-{chr(68)}. {answers[3] if len(answers) > 3 else ''}
+Choices:
+A. {choices[0]}
+B. {choices[1]}
+C. {choices[2]}
+D. {choices[3]}
 
-Only return the letter of the most likely correct answer (A, B, C, or D) — nothing else.
-"""
+Respond with just the correct letter (A, B, C, or D)."""
 
-            with st.spinner("Thinking with Gemini..."):
-                try:
-                    response = model.generate_content(prompt)
-                    ai_answer = response.text.strip().upper()
-                    if ai_answer in ["A", "B", "C", "D"]:
-                        st.success(f"✅ Gemini recommends: **{ai_answer}**")
-                    else:
-                        st.warning("❌ Gemini's response wasn't a valid option:\n\n" + response.text)
-                except Exception as e:
-                    st.error(f"Gemini error: {e}")
+    response = model.generate_content(prompt)
+    return {"answer": response.text.strip().upper()}
+
+# Run with: uvicorn gemini_server:app --reload --port 8000
+
+
+# === File: kahoot_bot.py ===
+import asyncio
+from kahoot import client
+import requests
+
+GEMINI_SERVER_URL = "http://localhost:8000/answer"
+GAME_PIN = input("Game PIN: ")
+NICKNAME = input("Bot Nickname: ")
+
+bot = client()
+
+@bot.on("ready")
+async def on_ready():
+    print("✅ Joined game as", NICKNAME)
+
+@bot.on("question")
+async def on_question(question):
+    q_text = question.question
+    choices = [c or "" for c in question.choices]
+
+    print("\n❓ Question:", q_text)
+    for i, choice in enumerate(choices):
+        print(f"{chr(65+i)}. {choice}")
+
+    try:
+        r = requests.post(GEMINI_SERVER_URL, json={"question": q_text, "choices": choices})
+        answer_letter = r.json()["answer"]
+        index = "ABCD".index(answer_letter)
+        print(f"🤖 Gemini recommends: {answer_letter}")
+        await question.answer(index)
+    except Exception as e:
+        print("❌ Error from Gemini server:", e)
+        await question.answer(0)  # default safe answer
+
+@bot.on("finish")
+def on_finish(data):
+    print("🏁 Game finished.")
+
+bot.join(GAME_PIN, NICKNAME)
