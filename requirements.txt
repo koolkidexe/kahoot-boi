@@ -1,2 +1,5 @@
-streamlit
+fastapi
+uvicorn
+kahoot.py
+requests
 google-generativeai
